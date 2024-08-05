@@ -1,6 +1,6 @@
 import birdie
 import eventsourcing
-import eventsourcing/sqlite_store
+import eventsourcing_sqlite
 import example_bank_account
 import gleam/int
 import gleam/io
@@ -17,7 +17,7 @@ pub fn main() {
 pub fn sqlite_store_test() {
   let assert Ok(db) = sqlight.open(":memory:")
   let sqlite_store =
-    sqlite_store.new(
+    eventsourcing_sqlite.new(
       sqlight_connection: db,
       empty_entity: example_bank_account.BankAccount(
         opened: False,
@@ -45,7 +45,7 @@ pub fn sqlite_store_test() {
       <> " events.",
     )
   }
-  sqlite_store.create_event_table(sqlite_store.eventstore)
+  eventsourcing_sqlite.create_event_table(sqlite_store.eventstore)
   |> should.be_ok
 
   let event_sourcing = eventsourcing.new(sqlite_store, [query])
@@ -74,7 +74,7 @@ pub fn sqlite_store_test() {
   |> should.be_ok
   |> should.equal(Nil)
 
-  sqlite_store.load_aggregate_entity(
+  eventsourcing_sqlite.load_aggregate_entity(
     sqlite_store.eventstore,
     "92085b42-032c-4d7a-84de-a86d67123858",
   )
@@ -85,7 +85,7 @@ pub fn sqlite_store_test() {
 pub fn sqlite_store_load_events_test() {
   let assert Ok(db) = sqlight.open(":memory:")
   let sqlite_store =
-    sqlite_store.new(
+    eventsourcing_sqlite.new(
       sqlight_connection: db,
       empty_entity: example_bank_account.BankAccount(
         opened: False,
@@ -113,7 +113,7 @@ pub fn sqlite_store_load_events_test() {
       <> " events.",
     )
   }
-  sqlite_store.create_event_table(sqlite_store.eventstore)
+  eventsourcing_sqlite.create_event_table(sqlite_store.eventstore)
   |> should.be_ok
 
   let event_sourcing = eventsourcing.new(sqlite_store, [query])
@@ -142,7 +142,7 @@ pub fn sqlite_store_load_events_test() {
   |> should.be_ok
   |> should.equal(Nil)
 
-  sqlite_store.load_events(
+  eventsourcing_sqlite.load_events(
     sqlite_store.eventstore,
     "92085b42-032c-4d7a-84de-a86d67123858",
   )
