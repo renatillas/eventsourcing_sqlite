@@ -1,7 +1,9 @@
 import eventsourcing
+import gleam/bool
 import gleam/dynamic
 import gleam/int
 import gleam/io
+import gleam/json
 import gleam/list
 import gleam/pair
 import gleam/result
@@ -11,13 +13,13 @@ import sqlight
 
 const insert_event_query = "
   INSERT INTO event 
-  (aggregate_type, aggregate_id, sequence, event_type, event_version, payload)
+  (aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata)
   VALUES 
-  ($1, $2, $3, $4, $5, $6)
+  ($1, $2, $3, $4, $5, $6, $7)
   "
 
 const select_events_query = "
-  SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload
+  SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata
   FROM event
   WHERE aggregate_type = $1 AND aggregate_id = $2
   ORDER BY sequence
@@ -32,6 +34,7 @@ const create_event_table_query = "
     event_type     text                         NOT NULL,
     event_version  text                         NOT NULL,
     payload        text                         NOT NULL,
+    metadata       text,
     PRIMARY KEY (aggregate_type, aggregate_id, sequence)
   );
   "
@@ -49,6 +52,9 @@ pub opaque type SqliteStore(entity, command, event, error) {
     aggregate_type: String,
   )
 }
+
+pub type Metadata =
+  List(#(String, String))
 
 // CONSTRUCTORS ----
 
@@ -107,8 +113,27 @@ pub fn create_event_table(
 pub fn load_aggregate_entity(
   sqlite_store: SqliteStore(entity, command, event, error),
   aggregate_id: eventsourcing.AggregateId,
-) -> entity {
-  load_aggregate(sqlite_store, aggregate_id).aggregate.entity
+) -> Result(entity, Nil) {
+  let assert Ok(commited_events) = load_events(sqlite_store, aggregate_id)
+  use <- bool.guard(commited_events |> list.length == 0, Error(Nil))
+
+  let #(aggregate, sequence) =
+    list.fold(
+      over: commited_events,
+      from: #(sqlite_store.empty_aggregate, 0),
+      with: fn(aggregate_and_sequence, event_envelop) {
+        let #(aggregate, _) = aggregate_and_sequence
+        #(
+          eventsourcing.Aggregate(
+            ..aggregate,
+            entity: aggregate.apply(aggregate.entity, event_envelop.payload),
+          ),
+          event_envelop.sequence,
+        )
+      },
+    )
+  eventsourcing.AggregateContext(aggregate_id:, aggregate:, sequence:).aggregate.entity
+  |> Ok
 }
 
 pub fn load_events(
@@ -122,7 +147,7 @@ pub fn load_events(
       sqlight.text(sqlite_store.aggregate_type),
       sqlight.text(aggregate_id),
     ],
-    expecting: dynamic.decode6(
+    expecting: dynamic.decode7(
       eventsourcing.SerializedEventEnvelop,
       dynamic.element(1, dynamic.string),
       dynamic.element(2, dynamic.int),
@@ -131,6 +156,7 @@ pub fn load_events(
           dynamic.string(dyn) |> result.map(sqlite_store.event_decoder)
         payload
       }),
+      dynamic.element(6, metadata_decoder),
       dynamic.element(3, dynamic.string),
       dynamic.element(4, dynamic.string),
       dynamic.element(0, dynamic.string),
@@ -167,9 +193,11 @@ fn commit(
   sqlite_store: SqliteStore(entity, command, event, error),
   context: eventsourcing.AggregateContext(entity, command, event, error),
   events: List(event),
+  metadata: List(#(String, String)),
 ) {
   let eventsourcing.AggregateContext(aggregate_id, _, sequence) = context
-  let wrapped_events = wrap_events(sqlite_store, aggregate_id, events, sequence)
+  let wrapped_events =
+    wrap_events(sqlite_store, aggregate_id, events, sequence, metadata)
   persist_events(sqlite_store, wrapped_events)
   io.println(
     "storing: "
@@ -186,6 +214,7 @@ fn wrap_events(
   aggregate_id: eventsourcing.AggregateId,
   events: List(event),
   sequence: Int,
+  metadata: Metadata,
 ) -> List(eventsourcing.EventEnvelop(event)) {
   list.map_fold(
     over: events,
@@ -201,6 +230,7 @@ fn wrap_events(
           event_type: postgres_store.event_type,
           event_version: postgres_store.event_version,
           aggregate_type: postgres_store.aggregate_type,
+          metadata: metadata,
         ),
       )
     },
@@ -218,6 +248,7 @@ fn persist_events(
       aggregate_id,
       sequence,
       payload,
+      metadata,
       event_type,
       event_version,
       aggregate_type,
@@ -233,8 +264,35 @@ fn persist_events(
         sqlight.text(event_type),
         sqlight.text(event_version),
         sqlight.text(payload |> sqlite_store.event_encoder),
+        sqlight.text(metadata |> metadata_encoder),
       ],
       expecting: dynamic.dynamic,
     )
+  })
+}
+
+fn metadata_encoder(metadata: Metadata) -> String {
+  json.array(metadata, fn(row) {
+    json.preprocessed_array([json.string(row.0), json.string(row.1)])
+  })
+  |> json.to_string
+}
+
+fn metadata_decoder(
+  dyn_metadata: dynamic.Dynamic,
+) -> Result(Metadata, List(dynamic.DecodeError)) {
+  use str_metadata <- result.try(dynamic.string(dyn_metadata))
+  use list_metadata <- result.map(
+    json.decode(
+      str_metadata,
+      dynamic.list(of: dynamic.list(of: dynamic.string)),
+    )
+    |> result.map_error(fn(_) { panic }),
+  )
+  list.map(list_metadata, fn(metadata) {
+    case metadata {
+      [key, value] -> #(key, value)
+      _ -> panic
+    }
   })
 }

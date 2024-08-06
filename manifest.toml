@@ -6,7 +6,7 @@ packages = [
   { name = "birdie", version = "1.1.8", build_tools = ["gleam"], requirements = ["argv", "filepath", "glance", "gleam_community_ansi", "gleam_erlang", "gleam_stdlib", "justin", "rank", "simplifile", "trie_again"], otp_app = "birdie", source = "hex", outer_checksum = "D225C0A3035FCD73A88402925A903AAD3567A1515C9EAE8364F11C17AD1805BB" },
   { name = "decode", version = "0.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "decode", source = "hex", outer_checksum = "965F517F67B8C172CA27A5C8E34C73733139E8C9E64736181B8C3179281F9793" },
   { name = "esqlite", version = "0.8.8", build_tools = ["rebar3"], requirements = [], otp_app = "esqlite", source = "hex", outer_checksum = "374902457C7D94DC9409C98D3BDD1CA0D50A60DC9F3BDF1FD8EB74C0DCDF02D6" },
-  { name = "eventsourcing", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "eventsourcing", source = "hex", outer_checksum = "F90DEDF1B119B24F607BDCE6ECC46A03D387D60A9258DECB58D978EAC6EB3BF7" },
+  { name = "eventsourcing", version = "3.0.0", build_tools = ["gleam"], requirements = ["decode", "gleam_erlang", "gleam_json", "gleam_otp", "gleam_stdlib"], otp_app = "eventsourcing", source = "hex", outer_checksum = "7E36133B3702620A1B0E48121C3969FF0CB3021F1A7F4951CF21CB254D0C5F4B" },
   { name = "filepath", version = "1.0.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "filepath", source = "hex", outer_checksum = "EFB6FF65C98B2A16378ABC3EE2B14124168C0CE5201553DE652E2644DCFDB594" },
   { name = "glam", version = "2.0.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "glam", source = "hex", outer_checksum = "66EC3BCD632E51EED029678F8DF419659C1E57B1A93D874C5131FE220DFAD2B2" },
   { name = "glance", version = "0.11.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "glexer"], otp_app = "glance", source = "hex", outer_checksum = "8F3314D27773B7C3B9FB58D8C02C634290422CE531988C0394FA0DF8676B964D" },
@@ -30,7 +30,7 @@ packages = [
 [requirements]
 birdie = { version = ">= 1.1.8 and < 2.0.0" }
 decode = { version = ">= 0.2.0 and < 1.0.0" }
-eventsourcing = { version = ">= 2.0.0 and < 3.0.0" }
+eventsourcing = { version = ">= 3.0.0 and < 4.0.0" }
 gleam_json = { version = ">= 1.0.1 and < 2.0.0" }
 gleam_stdlib = { version = ">= 0.34.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }

@@ -14,7 +14,7 @@ pub fn main() {
   gleeunit.main()
 }
 
-pub fn sqlite_store_test() {
+pub fn sqlite_store_load_aggregate_entity_test() {
   let assert Ok(db) = sqlight.open(":memory:")
   let sqlite_store =
     eventsourcing_sqlite.new(
@@ -78,6 +78,7 @@ pub fn sqlite_store_test() {
     sqlite_store.eventstore,
     "92085b42-032c-4d7a-84de-a86d67123858",
   )
+  |> should.be_ok
   |> pprint.format
   |> birdie.snap(title: "sqlite store")
 }
@@ -118,18 +119,20 @@ pub fn sqlite_store_load_events_test() {
 
   let event_sourcing = eventsourcing.new(sqlite_store, [query])
 
-  eventsourcing.execute(
+  eventsourcing.execute_with_metadata(
     event_sourcing,
     "92085b42-032c-4d7a-84de-a86d67123858",
     example_bank_account.OpenAccount("92085b42-032c-4d7a-84de-a86d67123858"),
+    [],
   )
   |> should.be_ok
   |> should.equal(Nil)
 
-  eventsourcing.execute(
+  eventsourcing.execute_with_metadata(
     event_sourcing,
     "92085b42-032c-4d7a-84de-a86d67123858",
     example_bank_account.DepositMoney(10.0),
+    [#("meta", "data")],
   )
   |> should.be_ok
   |> should.equal(Nil)
@@ -149,4 +152,32 @@ pub fn sqlite_store_load_events_test() {
   |> should.be_ok
   |> pprint.format
   |> birdie.snap(title: "sqlite store load events")
+}
+
+pub fn sqlite_store_load_empty_aggregate_test() {
+  let assert Ok(db) = sqlight.open(":memory:")
+  let sqlite_store =
+    eventsourcing_sqlite.new(
+      sqlight_connection: db,
+      empty_entity: example_bank_account.BankAccount(
+        opened: False,
+        balance: 0.0,
+      ),
+      handle_command_function: example_bank_account.handle,
+      apply_function: example_bank_account.apply,
+      event_encoder: example_bank_account.event_encoder,
+      event_decoder: example_bank_account.event_decoder,
+      event_type: example_bank_account.bank_account_event_type,
+      event_version: "1.0",
+      aggregate_type: example_bank_account.bank_account_type,
+    )
+  eventsourcing_sqlite.create_event_table(sqlite_store.eventstore)
+  |> should.be_ok
+
+  eventsourcing_sqlite.load_aggregate_entity(
+    sqlite_store.eventstore,
+    "92085b42-032c-4d7a-84de-a86d67123858",
+  )
+  |> pprint.format
+  |> birdie.snap(title: "sqlite load aggregate entity")
 }

@@ -1,0 +1,7 @@
+---
+version: 1.1.8
+title: sqlite load aggregate entity
+file: ./test/eventsourcing_sqlite_test.gleam
+test_name: sqlite_store_load_empty_aggregate_test
+---
+Error(Nil)
