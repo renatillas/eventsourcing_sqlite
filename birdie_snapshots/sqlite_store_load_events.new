@@ -1,0 +1,33 @@
+---
+version: 1.2.5
+title: sqlite store load events
+---
+[
+  SerializedEventEnvelop(
+    "92085b42-032c-4d7a-84de-a86d67123858",
+    1,
+    AccountOpened("92085b42-032c-4d7a-84de-a86d67123858"),
+    [],
+    "1.0",
+    "BankAccount",
+    "BankAccountEvent",
+  ),
+  SerializedEventEnvelop(
+    "92085b42-032c-4d7a-84de-a86d67123858",
+    2,
+    CustomerDepositedCash(10.0, 10.0),
+    [#("meta", "data")],
+    "1.0",
+    "BankAccount",
+    "BankAccountEvent",
+  ),
+  SerializedEventEnvelop(
+    "92085b42-032c-4d7a-84de-a86d67123858",
+    3,
+    CustomerWithdrewCash(5.99, 4.01),
+    [],
+    "1.0",
+    "BankAccount",
+    "BankAccountEvent",
+  ),
+]

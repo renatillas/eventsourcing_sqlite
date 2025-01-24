@@ -1,27 +1,28 @@
 import eventsourcing
-import gleam/bool
-import gleam/dynamic
+import gleam/dynamic/decode
 import gleam/int
-import gleam/io
 import gleam/json
 import gleam/list
+import gleam/option.{None}
 import gleam/pair
 import gleam/result
+import gleam/string
 import sqlight
 
 // CONSTANTS ----
 
-const insert_event_query = "
+const batch_insert_events_query = "
   INSERT INTO event 
   (aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata)
   VALUES 
-  ($1, $2, $3, $4, $5, $6, $7)
-  "
+"
 
 const select_events_query = "
   SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata
   FROM event
-  WHERE aggregate_type = $1 AND aggregate_id = $2
+  WHERE aggregate_type = $1 
+    AND aggregate_id = $2
+    AND sequence > $3
   ORDER BY sequence
   "
 
@@ -39,17 +40,47 @@ const create_event_table_query = "
   );
   "
 
+const create_snapshot_table_query = "
+  CREATE TABLE IF NOT EXISTS snapshot
+  (
+    aggregate_type text                         NOT NULL,
+    aggregate_id   text                         NOT NULL,
+    sequence       bigint CHECK (sequence >= 0) NOT NULL,
+    entity         text                         NOT NULL,
+    timestamp      int                          NOT NULL,
+    PRIMARY KEY (aggregate_type, aggregate_id)
+  );
+  "
+
+const save_snapshot_query = "
+  INSERT INTO snapshot (aggregate_type, aggregate_id, sequence, entity, timestamp)
+  VALUES ($1, $2, $3, $4, $5)
+  ON CONFLICT (aggregate_type, aggregate_id)
+  DO UPDATE SET
+    sequence = EXCLUDED.sequence,
+    entity = EXCLUDED.entity
+  "
+
+const select_snapshot_query = "
+  SELECT aggregate_type, aggregate_id, sequence, entity, timestamp
+  FROM snapshot
+  WHERE aggregate_type = $1 
+    AND aggregate_id = $2
+"
+
 // TYPES ----
 
-pub opaque type SqliteStore(entity, command, event, error) {
+@internal
+pub type SqliteStore(entity, command, event, error) {
   SqliteStore(
-    db: sqlight.Connection,
-    empty_aggregate: eventsourcing.Aggregate(entity, command, event, error),
+    connection_string: String,
     event_encoder: fn(event) -> String,
-    event_decoder: fn(String) -> Result(event, List(dynamic.DecodeError)),
+    event_decoder: decode.Decoder(event),
     event_type: String,
     event_version: String,
     aggregate_type: String,
+    entity_encoder: fn(entity) -> String,
+    entity_decoder: decode.Decoder(entity),
   )
 }
 
@@ -59,154 +90,176 @@ pub type Metadata =
 // CONSTRUCTORS ----
 
 pub fn new(
-  sqlight_connection sqlight_connection: sqlight.Connection,
-  empty_entity empty_entity: entity,
-  handle_command_function handle: eventsourcing.Handle(
-    entity,
-    command,
-    event,
-    error,
-  ),
-  apply_function apply: eventsourcing.Apply(entity, event),
+  sqlight_connection_string connection_string: String,
   event_encoder event_encoder: fn(event) -> String,
-  event_decoder event_decoder: fn(String) ->
-    Result(event, List(dynamic.DecodeError)),
+  event_decoder event_decoder: decode.Decoder(event),
   event_type event_type: String,
   event_version event_version: String,
   aggregate_type aggregate_type: String,
+  entity_encoder entity_encoder: fn(entity) -> String,
+  entity_decoder entity_decoder: decode.Decoder(entity),
 ) -> eventsourcing.EventStore(
   SqliteStore(entity, command, event, error),
   entity,
   command,
   event,
   error,
+  sqlight.Connection,
 ) {
   let eventstore =
     SqliteStore(
-      db: sqlight_connection,
-      empty_aggregate: eventsourcing.Aggregate(empty_entity, handle, apply),
+      connection_string:,
       event_encoder:,
       event_decoder:,
       event_type:,
       event_version:,
       aggregate_type:,
+      entity_encoder:,
+      entity_decoder:,
     )
 
   eventsourcing.EventStore(
     eventstore:,
-    commit: commit,
-    load_aggregate: load_aggregate,
+    load_events: fn(sqlite_store, tx, aggregate_id, start_from) {
+      load_events(sqlite_store, tx, aggregate_id, start_from)
+    },
+    commit_events: fn(tx, aggregate_id, events, metadata) {
+      commit_events(eventstore, tx, aggregate_id, events, metadata)
+    },
+    load_snapshot: fn(tx, aggregate_id) {
+      load_snapshot(eventstore, tx, aggregate_id)
+    },
+    save_snapshot: fn(tx, snapshot) { save_snapshot(eventstore, tx, snapshot) },
+    execute_transaction: execute_in_transaction(connection_string),
+    load_aggregate_transaction: execute_in_transaction(connection_string),
+    get_latest_snapshot_transaction: execute_in_transaction(connection_string),
+    load_events_transaction: execute_in_transaction(connection_string),
   )
 }
 
 pub fn create_event_table(
   sqlite_store: SqliteStore(entity, command, event, error),
 ) {
-  sqlight.query(
-    create_event_table_query,
-    on: sqlite_store.db,
-    with: [],
-    expecting: dynamic.dynamic,
+  use db <- result.try(
+    sqlight.open(sqlite_store.connection_string)
+    |> result.map_error(fn(error) {
+      eventsourcing.EventStoreError(
+        "Failed to open connection: " <> string.inspect(error),
+      )
+    }),
   )
+  sqlight.exec(create_event_table_query, on: db)
+  |> result.map_error(fn(error) {
+    eventsourcing.EventStoreError(
+      "Failed to create event table: " <> string.inspect(error),
+    )
+  })
 }
 
-pub fn load_aggregate_entity(
+pub fn create_snapshot_table(
   sqlite_store: SqliteStore(entity, command, event, error),
-  aggregate_id: eventsourcing.AggregateId,
-) -> Result(entity, Nil) {
-  let assert Ok(commited_events) = load_events(sqlite_store, aggregate_id)
-  use <- bool.guard(commited_events |> list.length == 0, Error(Nil))
-
-  let #(aggregate, sequence) =
-    list.fold(
-      over: commited_events,
-      from: #(sqlite_store.empty_aggregate, 0),
-      with: fn(aggregate_and_sequence, event_envelop) {
-        let #(aggregate, _) = aggregate_and_sequence
-        #(
-          eventsourcing.Aggregate(
-            ..aggregate,
-            entity: aggregate.apply(aggregate.entity, event_envelop.payload),
-          ),
-          event_envelop.sequence,
-        )
-      },
+) -> Result(Nil, eventsourcing.EventSourcingError(error)) {
+  use db <- result.try(
+    sqlight.open(sqlite_store.connection_string)
+    |> result.map_error(fn(error) {
+      eventsourcing.EventStoreError(
+        "Failed to open connection: " <> string.inspect(error),
+      )
+    }),
+  )
+  sqlight.exec(create_snapshot_table_query, on: db)
+  |> result.map(fn(_) { Nil })
+  |> result.map_error(fn(error) {
+    eventsourcing.EventStoreError(
+      "Failed to create snapshot table: " <> string.inspect(error),
     )
-  eventsourcing.AggregateContext(aggregate_id:, aggregate:, sequence:).aggregate.entity
-  |> Ok
+  })
 }
 
 pub fn load_events(
   sqlite_store: SqliteStore(entity, command, event, error),
+  tx,
   aggregate_id: eventsourcing.AggregateId,
+  start_from: Int,
 ) {
-  use resulted <- result.map(sqlight.query(
+  use _ <- result.try(
+    sqlight.exec("BEGIN;", on: tx)
+    |> result.map_error(fn(error) {
+      eventsourcing.EventStoreError(string.inspect(error))
+    }),
+  )
+
+  let row_decoder = {
+    use aggregate_id <- decode.field(1, decode.string)
+    use sequence <- decode.field(2, decode.int)
+    use payload <- decode.field(5, {
+      use payload_string <- decode.then(decode.string)
+      let assert Ok(payload) =
+        json.parse(payload_string, sqlite_store.event_decoder)
+      decode.success(payload)
+    })
+
+    use metadata <- decode.field(6, metadata_decoder())
+    use event_type <- decode.field(4, decode.string)
+    use event_version <- decode.field(0, decode.string)
+    use aggregate_type <- decode.field(3, decode.string)
+    decode.success(eventsourcing.SerializedEventEnvelop(
+      aggregate_id:,
+      sequence:,
+      payload:,
+      metadata:,
+      event_type:,
+      event_version:,
+      aggregate_type:,
+    ))
+  }
+  sqlight.query(
     select_events_query,
-    on: sqlite_store.db,
+    on: tx,
     with: [
       sqlight.text(sqlite_store.aggregate_type),
       sqlight.text(aggregate_id),
+      sqlight.int(start_from),
     ],
-    expecting: dynamic.decode7(
-      eventsourcing.SerializedEventEnvelop,
-      dynamic.element(1, dynamic.string),
-      dynamic.element(2, dynamic.int),
-      dynamic.element(5, fn(dyn) {
-        let assert Ok(payload) =
-          dynamic.string(dyn) |> result.map(sqlite_store.event_decoder)
-        payload
-      }),
-      dynamic.element(6, metadata_decoder),
-      dynamic.element(3, dynamic.string),
-      dynamic.element(4, dynamic.string),
-      dynamic.element(0, dynamic.string),
-    ),
-  ))
-  resulted
+    expecting: row_decoder,
+  )
+  |> result.map_error(fn(error) {
+    eventsourcing.EventStoreError(string.inspect(error))
+  })
 }
 
-fn load_aggregate(
+fn commit_events(
   sqlite_store: SqliteStore(entity, command, event, error),
-  aggregate_id: eventsourcing.AggregateId,
-) -> eventsourcing.AggregateContext(entity, command, event, error) {
-  let assert Ok(commited_events) = load_events(sqlite_store, aggregate_id)
-
-  let #(aggregate, sequence) =
-    list.fold(
-      over: commited_events,
-      from: #(sqlite_store.empty_aggregate, 0),
-      with: fn(aggregate_and_sequence, event_envelop) {
-        let #(aggregate, _) = aggregate_and_sequence
-        #(
-          eventsourcing.Aggregate(
-            ..aggregate,
-            entity: aggregate.apply(aggregate.entity, event_envelop.payload),
-          ),
-          event_envelop.sequence,
-        )
-      },
-    )
-  eventsourcing.AggregateContext(aggregate_id:, aggregate:, sequence:)
-}
-
-fn commit(
-  sqlite_store: SqliteStore(entity, command, event, error),
-  context: eventsourcing.AggregateContext(entity, command, event, error),
+  tx,
+  aggregate: eventsourcing.Aggregate(entity, command, event, error),
   events: List(event),
   metadata: List(#(String, String)),
+) -> Result(
+  #(List(eventsourcing.EventEnvelop(event)), Int),
+  eventsourcing.EventSourcingError(error),
 ) {
-  let eventsourcing.AggregateContext(aggregate_id, _, sequence) = context
+  let eventsourcing.Aggregate(aggregate_id, _, sequence) = aggregate
+
   let wrapped_events =
     wrap_events(sqlite_store, aggregate_id, events, sequence, metadata)
-  persist_events(sqlite_store, wrapped_events)
-  io.println(
-    "storing: "
-    <> wrapped_events |> list.length |> int.to_string
-    <> " events for Aggregate ID '"
-    <> aggregate_id
-    <> "'",
+  let assert Ok(last_event) = list.last(wrapped_events)
+
+  let events =
+    persist_events(sqlite_store, tx, wrapped_events)
+    |> result.map(fn(_) { #(wrapped_events, last_event.sequence) })
+
+  use _ <- result.try(
+    sqlight.exec("COMMIT;", on: tx)
+    |> result.map_error(fn(error) {
+      eventsourcing.EventStoreError(string.inspect(error))
+    }),
   )
-  wrapped_events
+
+  events
+  |> result.map_error(fn(error) {
+    sqlight.exec("ROLLBACK;", on: tx)
+    eventsourcing.EventStoreError(string.inspect(error))
+  })
 }
 
 fn wrap_events(
@@ -240,24 +293,40 @@ fn wrap_events(
 
 fn persist_events(
   sqlite_store: SqliteStore(entity, command, event, error),
+  tx,
   wrapped_events: List(eventsourcing.EventEnvelop(event)),
 ) {
-  wrapped_events
-  |> list.map(fn(event) {
-    let assert eventsourcing.SerializedEventEnvelop(
-      aggregate_id,
-      sequence,
-      payload,
-      metadata,
-      event_type,
-      event_version,
-      aggregate_type,
-    ) = event
+  // Generate the placeholders for batch insert
+  let #(placeholders, params, _) =
+    list.index_fold(wrapped_events, #("", [], 0), fn(acc, event, index) {
+      let #(placeholders, params, _) = acc
+      let offset = index * 7
+      // 7 parameters per event
+      let row_placeholders =
+        "($"
+        <> string.join(
+          list.range(offset + 1, offset + 7)
+            |> list.map(int.to_string),
+          ", $",
+        )
+        <> ")"
 
-    sqlight.query(
-      insert_event_query,
-      on: sqlite_store.db,
-      with: [
+      let sep = case placeholders {
+        "" -> ""
+        _ -> ", "
+      }
+
+      let assert eventsourcing.SerializedEventEnvelop(
+        aggregate_id,
+        sequence,
+        payload,
+        metadata,
+        event_type,
+        event_version,
+        aggregate_type,
+      ) = event
+
+      let new_params = [
         sqlight.text(aggregate_type),
         sqlight.text(aggregate_id),
         sqlight.int(sequence),
@@ -265,10 +334,29 @@ fn persist_events(
         sqlight.text(event_version),
         sqlight.text(payload |> sqlite_store.event_encoder),
         sqlight.text(metadata |> metadata_encoder),
-      ],
-      expecting: dynamic.dynamic,
-    )
-  })
+      ]
+
+      #(
+        placeholders <> sep <> row_placeholders,
+        list.append(params, new_params),
+        index + 1,
+      )
+    })
+
+  // If no events to insert, return early
+  case wrapped_events {
+    [] -> Ok(Nil)
+    _ -> {
+      let query = batch_insert_events_query <> placeholders
+      sqlight.query(query, on: tx, with: params, expecting: decode.dynamic)
+      |> result.map(fn(_) { Nil })
+      |> result.map_error(fn(error) {
+        eventsourcing.EventStoreError(
+          "Failed to insert events: " <> string.inspect(error),
+        )
+      })
+    }
+  }
 }
 
 fn metadata_encoder(metadata: Metadata) -> String {
@@ -278,21 +366,94 @@ fn metadata_encoder(metadata: Metadata) -> String {
   |> json.to_string
 }
 
-fn metadata_decoder(
-  dyn_metadata: dynamic.Dynamic,
-) -> Result(Metadata, List(dynamic.DecodeError)) {
-  use str_metadata <- result.try(dynamic.string(dyn_metadata))
-  use list_metadata <- result.map(
-    json.decode(
-      str_metadata,
-      dynamic.list(of: dynamic.list(of: dynamic.string)),
-    )
-    |> result.map_error(fn(_) { panic }),
+fn metadata_decoder() {
+  use stringmetadata <- decode.then(decode.string)
+  let assert Ok(listmetadata) =
+    json.parse(stringmetadata, decode.list(decode.list(decode.string)))
+
+  list.map(listmetadata, fn(metadata) {
+    let assert [key, val] = metadata
+    #(key, val)
+  })
+  |> decode.success
+}
+
+fn load_snapshot(
+  sqlite_store: SqliteStore(entity, command, event, error),
+  tx,
+  aggregate_id: eventsourcing.AggregateId,
+) {
+  let row_decoder = {
+    use aggregate_id <- decode.field(1, decode.string)
+    use sequence <- decode.field(2, decode.int)
+    use entity <- decode.field(3, {
+      use entity_string <- decode.then(decode.string)
+      let assert Ok(entity) =
+        json.parse(entity_string, sqlite_store.entity_decoder)
+      decode.success(entity)
+    })
+    use timestamp <- decode.field(4, decode.int)
+    decode.success(eventsourcing.Snapshot(
+      aggregate_id:,
+      sequence:,
+      entity:,
+      timestamp:,
+    ))
+  }
+
+  sqlight.query(
+    select_snapshot_query,
+    on: tx,
+    with: [
+      sqlight.text(sqlite_store.aggregate_type),
+      sqlight.text(aggregate_id),
+    ],
+    expecting: row_decoder,
   )
-  list.map(list_metadata, fn(metadata) {
-    case metadata {
-      [key, value] -> #(key, value)
-      _ -> panic
+  |> result.map(fn(response) {
+    case response {
+      [] -> None
+      [snapshot, ..] -> option.Some(snapshot)
     }
   })
+  |> result.map_error(fn(error) {
+    eventsourcing.EventStoreError(string.inspect(error))
+  })
+}
+
+fn save_snapshot(
+  sqlite_store: SqliteStore(entity, command, event, error),
+  tx,
+  snapshot: eventsourcing.Snapshot(entity),
+) {
+  let eventsourcing.Snapshot(aggregate_id, entity, sequence, timestamp) =
+    snapshot
+  sqlight.query(
+    save_snapshot_query,
+    on: tx,
+    with: [
+      sqlight.text(sqlite_store.aggregate_type),
+      sqlight.text(aggregate_id),
+      sqlight.int(sequence),
+      sqlight.text(entity |> sqlite_store.entity_encoder),
+      sqlight.int(timestamp),
+    ],
+    expecting: decode.dynamic,
+  )
+  |> result.map_error(fn(error) {
+    eventsourcing.EventStoreError(string.inspect(error))
+  })
+  |> result.map(fn(_) { Nil })
+}
+
+fn execute_in_transaction(connection_string: String) {
+  fn(f) {
+    let f = fn(db) {
+      f(db) |> result.map_error(fn(error) { string.inspect(error) })
+    }
+    sqlight.with_connection(connection_string, f)
+    |> result.map_error(fn(error) {
+      eventsourcing.EventStoreError(string.inspect(error))
+    })
+  }
 }
