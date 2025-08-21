@@ -8,12 +8,12 @@ repository = { type = "github", user = "renatillas", repo = "eventsourcing_sqlit
 
 [dependencies]
 gleam_stdlib = ">= 0.53.0 and < 2.0.0"
-eventsourcing = ">= 6.1.0 and < 7.0.0"
+eventsourcing = ">= 7.0.0 and < 8.0.0"
 sqlight = ">= 1.0.0 and < 2.0.0"
-gleam_json = ">= 2.0.3 and < 3.0.0"
+gleam_json = ">= 3.0.2 and < 4.0.0"
 
 [dev-dependencies]
 gleeunit = ">= 1.2.0 and < 2.0.0"
 birdie = ">= 1.2.5 and < 2.0.0"
 pprint = ">= 1.0.4 and < 2.0.0"
-gleam_otp = ">= 0.16.1 and < 1.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"
