@@ -257,8 +257,15 @@ fn commit_events(
 
   events
   |> result.map_error(fn(error) {
-    sqlight.exec("ROLLBACK;", on: tx)
-    eventsourcing.EventStoreError(string.inspect(error))
+    let result = sqlight.exec("ROLLBACK;", on: tx)
+    eventsourcing.EventStoreError(
+      "ROLLING BACK: "
+      <> string.inspect(error)
+      <> case result {
+        Ok(_) -> ""
+        Error(e) -> " - Failed to rollback transaction: " <> string.inspect(e)
+      },
+    )
   })
 }
 
