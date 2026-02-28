@@ -7,6 +7,7 @@ import gleam/option.{None}
 import gleam/pair
 import gleam/result
 import gleam/string
+import gleam/time/timestamp
 import sqlight
 
 // CONSTANTS ----
@@ -404,7 +405,7 @@ fn load_snapshot(
       aggregate_id:,
       sequence:,
       entity:,
-      timestamp:,
+      timestamp: timestamp.from_unix_seconds(timestamp),
     ))
   }
 
@@ -435,6 +436,7 @@ fn save_snapshot(
 ) {
   let eventsourcing.Snapshot(aggregate_id, entity, sequence, timestamp) =
     snapshot
+  let #(seconds, _) = timestamp.to_unix_seconds_and_nanoseconds(timestamp)
   sqlight.query(
     save_snapshot_query,
     on: tx,
@@ -443,7 +445,7 @@ fn save_snapshot(
       sqlight.text(aggregate_id),
       sqlight.int(sequence),
       sqlight.text(entity |> sqlite_store.entity_encoder),
-      sqlight.int(timestamp),
+      sqlight.int(seconds),
     ],
     expecting: decode.dynamic,
   )
@@ -454,13 +456,5 @@ fn save_snapshot(
 }
 
 fn execute_in_transaction(connection_string: String) {
-  fn(f) {
-    let f = fn(db) {
-      f(db) |> result.map_error(fn(error) { string.inspect(error) })
-    }
-    sqlight.with_connection(connection_string, f)
-    |> result.map_error(fn(error) {
-      eventsourcing.EventStoreError(string.inspect(error))
-    })
-  }
+  fn(f) { sqlight.with_connection(connection_string, f) }
 }
