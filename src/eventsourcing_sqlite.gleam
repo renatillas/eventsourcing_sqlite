@@ -145,14 +145,14 @@ pub fn create_event_table(
     sqlight.open(sqlite_store.connection_string)
     |> result.map_error(fn(error) {
       eventsourcing.EventStoreError(
-        "Failed to open connection: " <> string.inspect(error),
+        "Failed to open connection: " <> error.message,
       )
     }),
   )
   sqlight.exec(create_event_table_query, on: db)
   |> result.map_error(fn(error) {
     eventsourcing.EventStoreError(
-      "Failed to create event table: " <> string.inspect(error),
+      "Failed to create event table: " <> error.message,
     )
   })
 }
@@ -164,7 +164,7 @@ pub fn create_snapshot_table(
     sqlight.open(sqlite_store.connection_string)
     |> result.map_error(fn(error) {
       eventsourcing.EventStoreError(
-        "Failed to open connection: " <> string.inspect(error),
+        "Failed to open connection: " <> error.message,
       )
     }),
   )
@@ -172,7 +172,7 @@ pub fn create_snapshot_table(
   |> result.map(fn(_) { Nil })
   |> result.map_error(fn(error) {
     eventsourcing.EventStoreError(
-      "Failed to create snapshot table: " <> string.inspect(error),
+      "Failed to create snapshot table: " <> error.message,
     )
   })
 }
@@ -186,7 +186,7 @@ pub fn load_events(
   use _ <- result.try(
     sqlight.exec("BEGIN;", on: tx)
     |> result.map_error(fn(error) {
-      eventsourcing.EventStoreError(string.inspect(error))
+      eventsourcing.EventStoreError(error.message)
     }),
   )
 
@@ -224,9 +224,7 @@ pub fn load_events(
     ],
     expecting: row_decoder,
   )
-  |> result.map_error(fn(error) {
-    eventsourcing.EventStoreError(string.inspect(error))
-  })
+  |> result.map_error(fn(error) { eventsourcing.EventStoreError(error.message) })
 }
 
 fn commit_events(
@@ -252,7 +250,7 @@ fn commit_events(
   use _ <- result.try(
     sqlight.exec("COMMIT;", on: tx)
     |> result.map_error(fn(error) {
-      eventsourcing.EventStoreError(string.inspect(error))
+      eventsourcing.EventStoreError(error.message)
     }),
   )
 
@@ -313,7 +311,7 @@ fn persist_events(
       let row_placeholders =
         "($"
         <> string.join(
-          list.range(offset + 1, offset + 7)
+          int.range(from: offset, to: offset + 7, with: [], run: list.prepend)
             |> list.map(int.to_string),
           ", $",
         )
@@ -456,5 +454,5 @@ fn save_snapshot(
 }
 
 fn execute_in_transaction(connection_string: String) {
-  fn(f) { sqlight.with_connection(connection_string, f) }
+  sqlight.with_connection(connection_string, _)
 }
